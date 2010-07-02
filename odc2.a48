@@ -1,0 +1,421 @@
+; Copyright (C) 1997-1999 by Soeren Gust, sgust@ithh.informationstheater.de
+; Copyright (C) 2010 by Felipe Corrêa da Sanches, juca@members.fsf.org
+; Copyright (C) 2010 by Leandro Lameiro, lameiro@gmail.com
+; Copyright (C) 2010 by Niels van Dijkhuizen, niels_van_dijkhuizen@yahoo.com
+
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+	cpu	8048
+
+time_parameter equ 20h
+yoffs equ 21h
+snow_x0 equ 22h
+
+N1 equ 00h
+N2 equ 04h
+N3 equ 08h
+N4 equ 0ch
+N5 equ 10h
+N6 equ 14h
+N7 equ 18h
+N8 equ 1ch
+N9 equ 20h
+N10 equ 24h
+N11 equ 12h
+
+TONE equ 80h
+NOISE equ 40h 
+PAUSE equ 20h
+JUMPTO equ 10h
+
+	org	400h
+
+    include	"bitfuncs.inc"	
+	include	"g7000.h"
+
+	jmp	selectgame	; RESET
+	jmp	irq		; interrupt
+	jmp	timer		; timer
+	jmp	vsyncirq	; VSYNC-interrupt
+	jmp	start		; after selectgame
+	jmp	mysoundirq	; sound-interrupt
+
+timer	retr			; we don't need timer
+
+;calc_cos:
+;	input:
+;A <-- alpha
+;	output:
+;A --> 128 + 128*cos(alpha)
+
+calc_sin
+	add a,#16*3 ; shift -90 degrees = +270 degrees (64 steps = 2pi radians = 360 degrees)
+calc_cos
+	anl a, #03fh ;mask-in 6 lower bits (limit to range 0-63)
+	add	a,#lo(cos_table)
+	movp a,@a
+	ret
+
+cos_table
+	include	"cos_table.inc"
+
+rewired_str
+	db 7
+	db _R, _E, _W, _I, _R, _E, _D
+
+_2010_str
+	db 4
+	db _2, _0, _1, _0
+
+start
+	mov r0, #lo(snow_x0)
+
+	mov a, #0
+	mov @r0, a
+	inc r0
+
+	mov a, #80
+	mov @r0, a
+	inc r0
+
+	mov a, #30
+	mov @r0, a
+	inc r0
+
+	mov a, #60
+	mov @r0, a
+
+	mov a, #lo(rewired_tune)
+	mov a, #76h
+	call playsound
+
+main_loop
+
+    call waitvsync
+
+	;increment time time_parameter:
+	mov r0,#time_parameter
+	inc @r0
+
+	mov r0, #lo(yoffs)
+	mov @r0, #0
+    mov     r7,#lo(rewired_str)
+	call print_string_in_circles
+
+	call print_snowflakes
+
+;-----------------
+
+;routine to wait for the middle of the screen:
+	mov r0, #0c0h
+here0
+	mov r1, #02h
+here1
+	djnz r1, here1
+	djnz r0, here0
+
+;-----------------
+
+	mov r0, #lo(yoffs)
+	mov @r0, #80
+    mov     r7,#lo(_2010_str)
+	call print_string_in_circles
+
+    jmp main_loop
+
+setup_snow_char
+	mov r5, #29h	; char "x"
+	;is it odd?
+	anl a, #04h
+	jz odd_time_parameter
+	inc r5 			; char "%"
+odd_time_parameter
+	ret
+
+print_snowflakes
+	mov r0,#time_parameter
+	mov a,@r0
+	mov r1,a; r1 = time_parameter
+
+	mov r0,#vdc_char8
+	mov r2,#4; four snowflakes
+snowflake
+	mov a, r1
+	call setup_snow_char
+
+	mov a, r1
+	mov r4, a ; y=time_parameter
+	call calc_cos
+
+	anl a, #0fch
+	rr a
+	rr a
+
+	mov r3,a ; x = 30 + 32 + 32*cos(time_parameter*2*pi/64)
+
+	;store copy of R0
+	mov a, r0
+	mov r7, a
+
+	mov a, r2
+	dec a
+	add a, #lo(snow_x0)
+	mov r0, a
+	mov a,@r0
+
+	;add initial x-offset to the calculated x-offset
+	add a, r3
+	mov r3, a
+
+	;restore R0
+	mov a, r7
+	mov r0, a
+
+	mov r6, #col_chr_white
+	call printchar
+
+	mov a, r1
+	add a, #60
+	mov r1, a ; different time_parameter for each snowflake	
+
+	djnz r2, snowflake
+	ret
+
+;input:
+;   R7 <-- string address
+;output:
+;   NONE
+;alters:
+;   A (R0) R1 R2 (R3) (R4) R5 R6 R7
+
+print_string_in_circles
+	;ret
+; read time time_parameter into R1:
+	mov r0,#time_parameter
+	mov a,@r0
+
+	;speed/4:
+	anl a, #0fch
+	rr a
+	rr a
+
+	mov r1,a ; r1=time_parameter/4
+
+	call	gfxoff
+
+	mov a, r7
+	movp a,@a
+	mov r2,a
+	inc r7
+
+	mov     r0,#vdc_char0
+loop
+	mov     a,r7
+    movp    a,@a
+    mov     r5,a
+    inc     r7
+
+	mov a, #lo(string_colors)
+	add a, r2
+	movp a,@a
+	mov r6, a
+
+	call calc_char_position
+
+	dec r1
+	dec r1
+;	dec r1
+    call    printchar           ; print it
+    djnz    r2,loop             ; do it again
+
+	call	gfxon
+	ret
+
+string_colors
+	db col_chr_green, col_chr_red, col_chr_white
+	db col_chr_green, col_chr_red, col_chr_white
+	db col_chr_green, col_chr_red, col_chr_white
+
+;old-colorful pallete
+;	db col_chr_violet, col_chr_green, col_chr_red, col_chr_blue, col_chr_yellow, col_chr_cyan
+;	db col_chr_violet, col_chr_green, col_chr_red, col_chr_blue, col_chr_yellow, col_chr_cyan
+
+;input:
+;   R1 <- alpha
+;output:
+;	R3 -> x = 8 + 64 + 64*sin(alpha*2*pi/64)
+;	R4 -> y = yoffset + 8 + 64 + 64*cos(alpha*2*pi/64)
+;alters:
+;   A, R3, R4
+;
+calc_char_position
+
+	;add y offset to char coordinates (double sprites hack)
+;	mov r4,r0
+	mov a, r0
+	mov r4, a
+
+	mov r0, #lo(yoffs)
+	mov a, @r0
+	mov r3, a
+
+	;mov r0, r4
+	mov a,r4
+	mov r0,a
+
+	mov a, r3
+
+	mov r4, a ; r4=yoffs
+
+	mov a,r1
+	add a,r1
+	add a,r1
+
+	call calc_cos
+	anl a, #0fch ;mask out lower bits
+	rr a; divide by 2
+	rr a; divide by 2
+
+	add a, #48 ; add an x offset
+
+	add a, r4; add the initial yoffset
+	mov r4,a ;y-coordinate for char
+
+    mov a,r1
+	add a,r1
+
+	call calc_sin
+	anl a, #0fch
+	rr a
+	rr a
+
+	add a, #48 ; 8 pixel away from the border
+
+	mov r3,a ;x-coordinate for char
+	ret
+
+	org	0700h
+
+mysoundirq
+	; check if BIOS sound or custom sound
+	mov	a,r4
+	add	a,#08ah		; >= 076h
+	jc	.custom
+	jmp	soundirq	; BIOS tune
+
+.custom	; custom sound handler, read sound opcodes from current page
+	mov	a,r4
+	movp	a,@a
+	mov	r1,a		; command byte
+	inc	r4
+	xrl	a,#0fh
+	jz	.op0f		; test for new opcode
+	mov	a,r4
+	movp	a,@a
+	mov	r2,a		; time_parameter byte
+	jmp	parsesnd	; let BIOS sound IRQ handle opcode
+
+	; opcode 0F: sound off, copy next 3 bytes into A7/8/9
+.op0f	mov	r0,#vdc_soundctrl
+	clr	a
+	movx	@r0,a		; old sound off
+	mov	r0,#vdc_sound0
+	mov	r1,#3		; number of bytes to copy
+.loop	mov	a,r4
+	movp	a,@a
+	movx	@r0,a
+	inc	r0
+	inc	r4
+	djnz	r1,.loop
+	jmp	mysoundirq	; restart sound handler
+
+
+chord macro note1,note2
+        db TONE|2, note1
+        db TONE|2, note2
+        db TONE|2, note1
+        db TONE|2, note2
+        db TONE|2, note1
+        db TONE|2, note2
+        endm
+
+noise macro length
+	db NOISE|length, 0FFh
+	endm
+
+	org 776h
+
+rewired_tune
+
+        db TONE|12,N1
+        db PAUSE|4
+	noise 3
+	db PAUSE|3
+        db TONE|10,N2
+        db PAUSE|8
+	noise 3
+        db PAUSE|9
+        db TONE|10,N2
+        db PAUSE|8
+        noise 3
+        db PAUSE|9
+
+;----2
+
+        db TONE|12,N1
+        db PAUSE|4
+        noise 3
+        db PAUSE|3
+        db PAUSE|10
+        db TONE|10,N2
+        db PAUSE|8
+        noise 3
+        db PAUSE|9
+        db TONE|10,N4
+        db PAUSE|8
+        noise 3
+        db PAUSE|9
+;----3
+
+        chord N6,N7
+        db PAUSE|4
+        noise 3
+        db PAUSE|3
+        db TONE|10,N2
+        db PAUSE|8
+        noise 3
+        db PAUSE|9
+        db TONE|10,N2
+        db PAUSE|8
+        noise 3
+        db PAUSE|9
+;----4
+
+        chord N4,N5
+        db PAUSE|4
+        noise 3
+        db PAUSE|3
+        db TONE|10,N2
+        db PAUSE|8
+        noise 3
+        db PAUSE|9
+        db TONE|10,N2
+        db PAUSE|8
+        noise 3
+        db PAUSE|9
+
+;----
+	db JUMPTO, lo(rewired_tune)
+
